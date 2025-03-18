@@ -1,0 +1,2532 @@
+
+// File: package.json (root)
+{
+  "name": "medical-device-matchmaking",
+  "version": "1.0.0",
+  "description": "A platform connecting medical device companies with distributors",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "build": "cd client && npm install && npm run build",
+    "postinstall": "npm run build"
+  },
+  "dependencies": {
+    "express": "^4.17.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.15"
+  }
+}
+
+// File: client/package.json
+{
+  "name": "medical-device-matchmaking-client",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@emotion/react": "^11.8.1",
+    "@emotion/styled": "^11.8.1",
+    "@mui/icons-material": "^5.4.4",
+    "@mui/material": "^5.4.4",
+    "@testing-library/jest-dom": "^5.16.2",
+    "@testing-library/react": "^12.1.3",
+    "@testing-library/user-event": "^13.5.0",
+    "firebase": "^9.6.7",
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
+    "react-router-dom": "^6.2.2",
+    "react-scripts": "5.0.0",
+    "web-vitals": "^2.1.4"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
+
+// File: client/src/firebase.js
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  signOut, 
+  sendPasswordResetEmail 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  query, 
+  where, 
+  updateDoc, 
+  arrayUnion, 
+  orderBy, 
+  serverTimestamp 
+} from 'firebase/firestore';
+
+// Replace with your Firebase config
+// You'll get this from Firebase console when you create a project
+const firebaseConfig = {
+  apiKey: "REPLACE_WITH_YOUR_API_KEY",
+  authDomain: "REPLACE_WITH_YOUR_AUTH_DOMAIN",
+  projectId: "REPLACE_WITH_YOUR_PROJECT_ID",
+  storageBucket: "REPLACE_WITH_YOUR_STORAGE_BUCKET",
+  messagingSenderId: "REPLACE_WITH_YOUR_MESSAGING_SENDER_ID",
+  appId: "REPLACE_WITH_YOUR_APP_ID"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Authentication functions
+export const registerUser = async (email, password, userType, initialData) => {
+  try {
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
+    
+    // Create user profile in Firestore
+    await setDoc(doc(db, "users", user.uid), {
+      email,
+      userType,
+      createdAt: serverTimestamp(),
+      ...initialData
+    });
+    
+    return { success: true, user };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const loginUser = async (email, password) => {
+  try {
+    const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    return { success: true, user: userCredential.user };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const logoutUser = async () => {
+  try {
+    await signOut(auth);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const resetPassword = async (email) => {
+  try {
+    await sendPasswordResetEmail(auth, email);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+// Profile and data functions
+export const getUserProfile = async (userId) => {
+  try {
+    const docRef = doc(db, "users", userId);
+    const docSnap = await getDoc(docRef);
+    
+    if (docSnap.exists()) {
+      return { success: true, profile: docSnap.data() };
+    } else {
+      return { success: false, error: "No profile found" };
+    }
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const updateUserProfile = async (userId, profileData) => {
+  try {
+    const userRef = doc(db, "users", userId);
+    await updateDoc(userRef, {
+      ...profileData,
+      updatedAt: serverTimestamp()
+    });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+// Matching functions
+export const getPotentialMatches = async (userId, userType) => {
+  try {
+    // Get user profile first
+    const { success, profile } = await getUserProfile(userId);
+    
+    if (!success) {
+      return { success: false, error: "Couldn't retrieve user profile" };
+    }
+    
+    // Determine the opposite user type to query
+    const oppositeType = userType === 'company' ? 'distributor' : 'company';
+    
+    // Create a query based on user type
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, where("userType", "==", oppositeType));
+    
+    const querySnapshot = await getDocs(q);
+    const potentialMatches = [];
+    
+    querySnapshot.forEach((doc) => {
+      const matchData = doc.data();
+      const matchScore = calculateMatchScore(profile, matchData, userType);
+      
+      potentialMatches.push({
+        id: doc.id,
+        matchScore,
+        ...matchData
+      });
+    });
+    
+    // Sort by match score (highest first)
+    potentialMatches.sort((a, b) => b.matchScore - a.matchScore);
+    
+    return { success: true, matches: potentialMatches };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+// Helper function to calculate match score between company and distributor
+const calculateMatchScore = (profile1, profile2, profile1Type) => {
+  // Ensure profile1 is always the company and profile2 is always the distributor
+  const company = profile1Type === 'company' ? profile1 : profile2;
+  const distributor = profile1Type === 'distributor' ? profile1 : profile2;
+  
+  let score = 0;
+  let maxScore = 0;
+  
+  // Geographic match (30% weight)
+  if (company.geographicNeeds && distributor.coverageAreas) {
+    const geographicOverlap = company.geographicNeeds.filter(
+      area => distributor.coverageAreas.includes(area)
+    ).length;
+    
+    if (company.geographicNeeds.length > 0) {
+      score += (geographicOverlap / company.geographicNeeds.length) * 30;
+      maxScore += 30;
+    }
+  }
+  
+  // Product category match (40% weight)
+  if (company.productCategories && distributor.specialties) {
+    const productOverlap = company.productCategories.filter(
+      category => distributor.specialties.includes(category)
+    ).length;
+    
+    if (company.productCategories.length > 0) {
+      score += (productOverlap / company.productCategories.length) * 40;
+      maxScore += 40;
+    }
+  }
+  
+  // Experience level match (15% weight)
+  if (distributor.yearsExperience) {
+    // Score experience on a scale of 1-10 (cap at 20 years)
+    const experienceScore = Math.min(10, distributor.yearsExperience / 2);
+    score += (experienceScore / 10) * 15;
+    maxScore += 15;
+  }
+  
+  // Surgeon relationships (15% weight)
+  if (distributor.surgeonRelationships) {
+    // Score on a scale of 1-10 (cap at 50 relationships)
+    const relationshipScore = Math.min(10, distributor.surgeonRelationships / 5);
+    score += (relationshipScore / 10) * 15;
+    maxScore += 15;
+  }
+  
+  // Calculate percentage
+  return maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
+};
+
+// Messaging functions
+export const sendMessage = async (senderId, receiverId, message) => {
+  try {
+    // Create a conversation ID that's the same regardless of who sends to whom
+    const conversationId = [senderId, receiverId].sort().join('_');
+    
+    const messageData = {
+      senderId,
+      text: message,
+      timestamp: serverTimestamp(),
+      read: false
+    };
+    
+    // Add message to the conversation
+    const conversationRef = doc(db, "conversations", conversationId);
+    await updateDoc(conversationRef, {
+      messages: arrayUnion(messageData),
+      updatedAt: serverTimestamp()
+    }).catch(async () => {
+      // If conversation doesn't exist, create it
+      await setDoc(conversationRef, {
+        participants: [senderId, receiverId],
+        messages: [messageData],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    });
+    
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const getConversations = async (userId) => {
+  try {
+    const conversationsRef = collection(db, "conversations");
+    const q = query(
+      conversationsRef, 
+      where("participants", "array-contains", userId),
+      orderBy("updatedAt", "desc")
+    );
+    
+    const querySnapshot = await getDocs(q);
+    const conversations = [];
+    
+    querySnapshot.forEach((doc) => {
+      const conversationData = doc.data();
+      conversations.push({
+        id: doc.id,
+        ...conversationData
+      });
+    });
+    
+    return { success: true, conversations };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+export { auth, db };
+
+// File: client/src/App.js
+import React, { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { ThemeProvider, createTheme } from '@mui/material/styles';
+import CssBaseline from '@mui/material/CssBaseline';
+import { auth } from './firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+
+// Components
+import LandingPage from './components/LandingPage';
+import Login from './components/Login';
+import Register from './components/Register';
+import Dashboard from './components/Dashboard';
+import ProfileSetup from './components/ProfileSetup';
+import Matches from './components/Matches';
+import Messages from './components/Messages';
+import Profile from './components/Profile';
+import Navbar from './components/Navbar';
+import PrivateRoute from './components/PrivateRoute';
+
+// Theme configuration
+const theme = createTheme({
+  palette: {
+    primary: {
+      main: '#1976d2',
+    },
+    secondary: {
+      main: '#f50057',
+    },
+    background: {
+      default: '#f5f5f5',
+    },
+  },
+  typography: {
+    fontFamily: 'Roboto, "Helvetica Neue", Arial, sans-serif',
+  },
+});
+
+function App() {
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setLoading(false);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Router>
+        {currentUser && <Navbar />}
+        <Routes>
+          <Route path="/" element={currentUser ? <Navigate to="/dashboard" /> : <LandingPage />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route
+            path="/dashboard"
+            element={
+              <PrivateRoute user={currentUser}>
+                <Dashboard />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/profile-setup"
+            element={
+              <PrivateRoute user={currentUser}>
+                <ProfileSetup />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/matches"
+            element={
+              <PrivateRoute user={currentUser}>
+                <Matches />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/messages"
+            element={
+              <PrivateRoute user={currentUser}>
+                <Messages />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <PrivateRoute user={currentUser}>
+                <Profile />
+              </PrivateRoute>
+            }
+          />
+        </Routes>
+      </Router>
+    </ThemeProvider>
+  );
+}
+
+export default App;
+
+// File: client/src/components/LandingPage.js
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { 
+  Box, 
+  Button, 
+  Container, 
+  Typography, 
+  Grid, 
+  Card, 
+  CardContent, 
+  CardMedia 
+} from '@mui/material';
+import BusinessIcon from '@mui/icons-material/Business';
+import PersonIcon from '@mui/icons-material/Person';
+import VerifiedIcon from '@mui/icons-material/Verified';
+import AnalyticsIcon from '@mui/icons-material/Analytics';
+import ForumIcon from '@mui/icons-material/Forum';
+
+const LandingPage = () => {
+  return (
+    <Box>
+      {/* Hero Section */}
+      <Box 
+        sx={{ 
+          background: 'linear-gradient(45deg, #1976d2 30%, #21CBF3 90%)',
+          color: 'white',
+          py: 8
+        }}
+      >
+        <Container maxWidth="lg">
+          <Grid container spacing={4} alignItems="center">
+            <Grid item xs={12} md={6}>
+              <Typography variant="h2" component="h1" gutterBottom>
+                Connect with the Perfect Medical Device Partner
+              </Typography>
+              <Typography variant="h5" paragraph>
+                A matchmaking platform for medical device companies and independent distributors
+              </Typography>
+              <Box sx={{ mt: 4 }}>
+                <Button 
+                  component={Link} 
+                  to="/register" 
+                  variant="contained" 
+                  size="large" 
+                  sx={{ mr: 2, px: 4, py: 1.5 }}
+                >
+                  Join Now
+                </Button>
+                <Button 
+                  component={Link} 
+                  to="/login" 
+                  variant="outlined" 
+                  size="large" 
+                  sx={{ backgroundColor: 'rgba(255,255,255,0.1)', color: 'white', px: 4, py: 1.5 }}
+                >
+                  Sign In
+                </Button>
+              </Box>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Box 
+                component="img"
+                src="https://images.unsplash.com/photo-1576091160550-2173dba999ef?auto=format&fit=crop&w=600&h=400"
+                alt="Medical professionals collaborating"
+                sx={{ 
+                  width: '100%',
+                  borderRadius: 2,
+                  boxShadow: 3
+                }}
+              />
+            </Grid>
+          </Grid>
+        </Container>
+      </Box>
+
+      {/* For Companies & Distributors Section */}
+      <Container maxWidth="lg" sx={{ py: 8 }}>
+        <Typography variant="h3" align="center" gutterBottom>
+          How It Works
+        </Typography>
+        <Typography variant="h6" align="center" color="textSecondary" paragraph>
+          Our platform connects the right partners in the medical device industry
+        </Typography>
+        
+        <Grid container spacing={4} sx={{ mt: 4 }}>
+          <Grid item xs={12} md={6}>
+            <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+              <CardMedia
+                component="img"
+                height="240"
+                image="https://images.unsplash.com/photo-1532938911079-1b06ac7ceec7?auto=format&fit=crop&w=600&h=240"
+                alt="Medical device company"
+              />
+              <CardContent sx={{ flexGrow: 1 }}>
+                <Typography gutterBottom variant="h4" component="div" sx={{ display: 'flex', alignItems: 'center' }}>
+                  <BusinessIcon color="primary" sx={{ mr: 1, fontSize: 30 }} />
+                  For Medical Device Companies
+                </Typography>
+                <Typography variant="body1" paragraph>
+                  Find the perfect distribution partners to reach healthcare professionals and grow your market presence.
+                </Typography>
+                <Typography variant="body1" component="ul" sx={{ pl: 2 }}>
+                  <li>Connect with experienced distributors in your target regions</li>
+                  <li>Reduce time and cost of building a distribution network</li>
+                  <li>Access distributors with established surgeon relationships</li>
+                  <li>Streamline your product-to-market strategy</li>
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+              <CardMedia
+                component="img"
+                height="240"
+                image="https://images.unsplash.com/photo-1581056771107-24ca5f033842?auto=format&fit=crop&w=600&h=240"
+                alt="Medical device distributor"
+              />
+              <CardContent sx={{ flexGrow: 1 }}>
+                <Typography gutterBottom variant="h4" component="div" sx={{ display: 'flex', alignItems: 'center' }}>
+                  <PersonIcon color="primary" sx={{ mr: 1, fontSize: 30 }} />
+                  For Independent Distributors
+                </Typography>
+                <Typography variant="body1" paragraph>
+                  Discover innovative products to add to your portfolio and increase your value to healthcare providers.
+                </Typography>
+                <Typography variant="body1" component="ul" sx={{ pl: 2 }}>
+                  <li>Find products that complement your existing portfolio</li>
+                  <li>Access pooled benefits like healthcare and 401K plans</li>
+                  <li>Utilize shared back-office support for administrative tasks</li>
+                  <li>Connect with reliable partners for case coverage</li>
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+        </Grid>
+      </Container>
+
+      {/* Features Section */}
+      <Box sx={{ bgcolor: '#f9f9f9', py: 8 }}>
+        <Container maxWidth="lg">
+          <Typography variant="h3" align="center" gutterBottom>
+            Platform Features
+          </Typography>
+          <Typography variant="h6" align="center" color="textSecondary" paragraph>
+            Everything you need to build successful partnerships
+          </Typography>
+          
+          <Grid container spacing={4} sx={{ mt: 4 }}>
+            <Grid item xs={12} md={4}>
+              <Card sx={{ height: '100%', textAlign: 'center', p: 3 }}>
+                <VerifiedIcon color="primary" sx={{ fontSize: 60 }} />
+                <Typography variant="h5" component="div" sx={{ mt: 2 }}>
+                  Verified Connections
+                </Typography>
+                <Typography variant="body1" color="textSecondary" sx={{ mt: 1 }}>
+                  All companies and distributors undergo a rigorous vetting process to ensure quality partnerships.
+                </Typography>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Card sx={{ height: '100%', textAlign: 'center', p: 3 }}>
+                <AnalyticsIcon color="primary" sx={{ fontSize: 60 }} />
+                <Typography variant="h5" component="div" sx={{ mt: 2 }}>
+                  Data Insights
+                </Typography>
+                <Typography variant="body1" color="textSecondary" sx={{ mt: 1 }}>
+                  Access analytics to optimize your partnerships and sales strategies for maximum performance.
+                </Typography>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Card sx={{ height: '100%', textAlign: 'center', p: 3 }}>
+                <ForumIcon color="primary" sx={{ fontSize: 60 }} />
+                <Typography variant="h5" component="div" sx={{ mt: 2 }}>
+                  Community Hub
+                </Typography>
+                <Typography variant="body1" color="textSecondary" sx={{ mt: 1 }}>
+                  Connect with other professionals, share best practices, and support one another.
+                </Typography>
+              </Card>
+            </Grid>
+          </Grid>
+        </Container>
+      </Box>
+
+      {/* Call to Action */}
+      <Box sx={{ bgcolor: '#1976d2', color: 'white', py: 8, textAlign: 'center' }}>
+        <Container maxWidth="md">
+          <Typography variant="h3" gutterBottom>
+            Ready to Transform Your Business?
+          </Typography>
+          <Typography variant="h6" paragraph>
+            Join our growing community of medical device companies and distributors today.
+          </Typography>
+          <Button 
+            component={Link} 
+            to="/register" 
+            variant="contained" 
+            size="large" 
+            sx={{ 
+              mt: 2, 
+              bgcolor: 'white', 
+              color: '#1976d2',
+              '&:hover': {
+                bgcolor: '#f5f5f5',
+              },
+              px: 4,
+              py: 1.5
+            }}
+          >
+            Create Your Free Account
+          </Button>
+        </Container>
+      </Box>
+
+      {/* Footer */}
+      <Box sx={{ bgcolor: '#263238', color: 'white', py: 6 }}>
+        <Container maxWidth="lg">
+          <Grid container spacing={4}>
+            <Grid item xs={12} md={4}>
+              <Typography variant="h6" gutterBottom>
+                Medical Match
+              </Typography>
+              <Typography variant="body2">
+                Connecting medical device companies with the right independent distributors.
+              </Typography>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography variant="h6" gutterBottom>
+                Quick Links
+              </Typography>
+              <Typography variant="body2" component={Link} to="/login" sx={{ color: 'white', display: 'block', mb: 1 }}>
+                Sign In
+              </Typography>
+              <Typography variant="body2" component={Link} to="/register" sx={{ color: 'white', display: 'block', mb: 1 }}>
+                Create Account
+              </Typography>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography variant="h6" gutterBottom>
+                Contact Us
+              </Typography>
+              <Typography variant="body2">
+                Email: info@medicalmatch.com
+              </Typography>
+              <Typography variant="body2">
+                Phone: (555) 123-4567
+              </Typography>
+            </Grid>
+          </Grid>
+          <Typography variant="body2" align="center" sx={{ mt: 4 }}>
+            © {new Date().getFullYear()} Medical Match. All rights reserved.
+          </Typography>
+        </Container>
+      </Box>
+    </Box>
+  );
+};
+
+export default LandingPage;
+
+// File: client/src/components/Login.js
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { 
+  Container, 
+  Box, 
+  Typography, 
+  TextField, 
+  Button, 
+  Paper,
+  Grid,
+  Divider,
+  Alert
+} from '@mui/material';
+import { loginUser, resetPassword } from '../firebase';
+
+const Login = () => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [resetSent, setResetSent] = useState(false);
+  const navigate = useNavigate();
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    const result = await loginUser(email, password);
+    
+    if (result.success) {
+      navigate('/dashboard');
+    } else {
+      setError(result.error);
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!email) {
+      setError('Please enter your email address to reset your password');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    const result = await resetPassword(email);
+    
+    if (result.success) {
+      setResetSent(true);
+    } else {
+      setError(result.error);
+    }
+    
+    setLoading(false);
+  };
+
+  return (
+    <Container maxWidth="sm">
+      <Box sx={{ mt: 8, mb: 8 }}>
+        <Paper elevation={3} sx={{ p: 4 }}>
+          <Typography variant="h4" component="h1" align="center" gutterBottom>
+            Sign In
+          </Typography>
+          <Typography variant="body1" align="center" color="textSecondary" sx={{ mb: 3 }}>
+            Access your Medical Match account
+          </Typography>
+
+          {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+          {resetSent && <Alert severity="success" sx={{ mb: 3 }}>Password reset email sent! Check your inbox.</Alert>}
+
+          <Box component="form" onSubmit={handleLogin} sx={{ mt: 1 }}>
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              id="email"
+              label="Email Address"
+              name="email"
+              autoComplete="email"
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="password"
+              label="Password"
+              type="password"
+              id="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <Button
+              type="submit"
+              fullWidth
+              variant="contained"
+              sx={{ mt: 3, mb: 2, py: 1.5 }}
+              disabled={loading}
+            >
+              {loading ? 'Signing in...' : 'Sign In'}
+            </Button>
+            <Grid container>
+              <Grid item xs>
+                <Button 
+                  variant="text" 
+                  onClick={handleResetPassword}
+                  disabled={loading}
+                  sx={{ textTransform: 'none' }}
+                >
+                  Forgot password?
+                </Button>
+              </Grid>
+              <Grid item>
+                <Button 
+                  component={Link} 
+                  to="/register" 
+                  variant="text"
+                  sx={{ textTransform: 'none' }}
+                >
+                  Don't have an account? Sign Up
+                </Button>
+              </Grid>
+            </Grid>
+          </Box>
+
+          <Divider sx={{ my: 3 }} />
+
+          <Box sx={{ textAlign: 'center' }}>
+            <Button 
+              component={Link} 
+              to="/" 
+              variant="text"
+              sx={{ textTransform: 'none' }}
+            >
+              Return to Home Page
+            </Button>
+          </Box>
+        </Paper>
+      </Box>
+    </Container>
+  );
+};
+
+export default Login;
+
+// File: client/src/components/Register.js
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { 
+  Container, 
+  Box, 
+  Typography, 
+  TextField, 
+  Button, 
+  Paper,
+  Grid,
+  Divider,
+  Alert,
+  RadioGroup,
+  FormControlLabel,
+  Radio,
+  FormControl,
+  FormLabel
+} from '@mui/material';
+import { registerUser } from '../firebase';
+
+const Register = () => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [userType, setUserType] = useState('company');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const navigate = useNavigate();
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    // Validate passwords match
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      setLoading(false);
+      return;
+    }
+
+    // Validate password strength
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
+      setLoading(false);
+      return;
+    }
+
+    // Create initial profile data based on user type
+    const initialData = {
+      companyName,
+      profileComplete: false,
+      ...(userType === 'company' 
+        ? {
+            productCategories: [],
+            geographicNeeds: [],
+            companySize: '',
+            description: '',
+            website: ''
+          } 
+        : {
+            coverageAreas: [],
+            specialties: [],
+            yearsExperience: 0,
+            surgeonRelationships: 0,
+            biography: ''
+          }
+      )
+    };
+
+    const result = await registerUser(email, password, userType, initialData);
+    
+    if (result.success) {
+      navigate('/profile-setup');
+    } else {
+      setError(result.error);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Container maxWidth="sm">
+      <Box sx={{ mt: 8, mb: 8 }}>
+        <Paper elevation={3} sx={{ p: 4 }}>
+          <Typography variant="h4" component="h1" align="center" gutterBottom>
+            Create Account
+          </Typography>
+          <Typography variant="body1" align="center" color="textSecondary" sx={{ mb: 3 }}>
+            Join the Medical Match platform
+          </Typography>
+
+          {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+
+          <Box component="form" onSubmit={handleRegister} sx={{ mt: 1 }}>
+            <FormControl component="fieldset" sx={{ mb: 2 }}>
+              <FormLabel component="legend">I am a:</FormLabel>
+              <RadioGroup
+                row
+                value={userType}
+                onChange={(e) => setUserType(e.target.value)}
+              >
+                <FormControlLabel 
+                  value="company" 
+                  control={<Radio />} 
+                  label="Medical Device Company" 
+                />
+                <FormControlLabel 
+                  value="distributor" 
+                  control={<Radio />} 
+                  label="Independent Distributor" 
+                />
+              </RadioGroup>
+            </FormControl>
+
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              id="email"
+              label="Email Address"
+              name="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              id="companyName"
+              label={userType === 'company' ? "Company Name" : "Business Name"}
+              name="companyName"
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="password"
+              label="Password"
+              type="password"
+              id="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="confirmPassword"
+              label="Confirm Password"
+              type="password"
+              id="confirmPassword"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
+            <Button
+              type="submit"
+              fullWidth
+              variant="contained"
+              sx={{ mt: 3, mb: 2, py: 1.5 }}
+              disabled={loading}
+            >
+              {loading ? 'Creating Account...' : 'Create Account'}
+            </Button>
+            <Grid container justifyContent="flex-end">
+              <Grid item>
+                <Button 
+                  component={Link} 
+                  to="/login" 
+                  variant="text"
+                  sx={{ textTransform: 'none' }}
+                >
+                  Already have an account? Sign in
+                </Button>
+              </Grid>
+            </Grid>
+          </Box>
+
+          <Divider sx={{ my: 3 }} />
+
+          <Box sx={{ textAlign: 'center' }}>
+            <Typography variant="body2" color="textSecondary" paragraph>
+              By creating an account, you agree to our Terms of Service and Privacy Policy.
+            </Typography>
+            <Button 
+              component={Link} 
+              to="/" 
+              variant="text"
+              sx={{ textTransform: 'none' }}
+            >
+              Return to Home Page
+            </Button>
+          </Box>
+        </Paper>
+      </Box>
+    </Container>
+  );
+};
+
+export default Register;
+
+// File: client/src/components/ProfileSetup.js
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { 
+  Container, 
+  Box, 
+  Typography, 
+  TextField, 
+  Button, 
+  Paper,
+  Stepper,
+  Step,
+  StepLabel,
+  Grid,
+  Chip,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Slider,
+  Alert
+} from '@mui/material';
+import { getUserProfile, updateUserProfile } from '../firebase';
+import { auth } from '../firebase';
+
+// Medical specialties options
+const specialtyOptions = [
+  'Orthopedics', 'Spine', 'Neurosurgery', 'Cardiology', 'Vascular',
+  'General Surgery', 'Plastic Surgery', 'ENT', 'Urology', 'Gynecology',
+  'Ophthalmology', 'Dental', 'Pain Management', 'Wound Care'
+];
+
+// Geographic regions
+const regionOptions = [
+  'Northeast US', 'Southeast US', 'Midwest US', 'Southwest US', 'West US',
+  'Canada', 'Mexico', 'Europe', 'Asia', 'South America', 'Australia',
+  'Middle East', 'Africa'
+];
+
+// Company size options
+const companySizeOptions = [
+  'Startup (1-10 employees)',
+  'Small (11-50 employees)',
+  'Medium (51-200 employees)',
+  'Large (201-500 employees)',
+  'Enterprise (500+ employees)'
+];
+
+const ProfileSetup = () => {
+  const [activeStep, setActiveStep] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [userType, setUserType] = useState('');
+  const [profile, setProfile] = useState({});
+  const navigate = useNavigate();
+
+  // Company-specific state
+  const [companyName, setCompanyName] = useState('');
+  const [companySize, setCompanySize] = useState('');
+  const [website, setWebsite] = useState('');
+  const [description, setDescription] = useState('');
+  const [productCategories, setProductCategories] = useState([]);
+  const [geographicNeeds, setGeographicNeeds] = useState([]);
+  const [productCategory, setProductCategory] = useState('');
+  const [geographicNeed, setGeographicNeed] = useState('');
+
+  // Distributor-specific state
+  const [businessName, setBusinessName] = useState('');
+  const [yearsExperience, setYearsExperience] = useState(0);
+  const [biography, setBiography] = useState('');
+  const [specialties, setSpecialties] = useState([]);
+  const [coverageAreas, setCoverageAreas] = useState([]);
+  const [surgeonRelationships, setSurgeonRelationships] = useState(0);
+  const [specialty, setSpecialty] = useState('');
+  const [coverageArea, setCoverageArea] = useState('');
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      if (!auth.currentUser) {
+        navigate('/login');
+        return;
+      }
+
+      const { success, profile } = await getUserProfile(auth.currentUser.uid);
+      
+      if (success) {
+        setUserType(profile.userType);
+        setProfile(profile);
+        
+        // Set appropriate fields based on user type
+        if (profile.userType === 'company') {
+          setCompanyName(profile.companyName || '');
+          setCompanySize(profile.companySize || '');
+          setWebsite(profile.website || '');
+          setDescription(profile.description || '');
+          setProductCategories(profile.productCategories || []);
+          setGeographicNeeds(profile.geographicNeeds || []);
+        } else {
+          setBusinessName(profile.companyName || '');
+          setYearsExperience(profile.yearsExperience || 0);
+          setBiography(profile.biography || '');
+          setSpecialties(profile.specialties || []);
+          setCoverageAreas(profile.coverageAreas || []);
+          setSurgeonRelationships(profile.surgeonRelationships || 0);
+        }
+      } else {
+        setError('Failed to load profile. Please try again.');
+      }
+      
+      setLoading(false);
+    };
+
+    loadProfile();
+  }, [navigate]);
+
+  const handleAddProductCategory = () => {
+    if (productCategory && !productCategories.includes(productCategory)) {
+      setProductCategories([...productCategories, productCategory]);
+      setProductCategory('');
+    }
+  };
+
+  const handleRemoveProductCategory = (category) => {
+    setProductCategories(productCategories.filter(c => c !== category));
+  };
+
+  const handleAddGeographicNeed = () => {
+    if (geographicNeed && !geographicNeeds.includes(geographicNeed)) {
+      setGeographicNeeds([...geographicNeeds, geographicNeed]);
+      setGeographicNeed('');
+    }
+  };
+
+  const handleRemoveGeographicNeed = (region) => {
+    setGeographicNeeds(geographicNeeds.filter(r => r !== region));
+  };
+
+  const handleAddSpecialty = () => {
+    if (specialty && !specialties.includes(specialty)) {
+      setSpecialties([...specialties, specialty]);
+      setSpecialty('');
+    }
+  };
+
+  const handleRemoveSpecialty = (spec) => {
+    setSpecialties(specialties.filter(s => s !== spec));
+  };
+
+  const handleAddCoverageArea = () => {
+    if (coverageArea && !coverageAreas.includes(coverageArea)) {
+      setCoverageAreas([...coverageAreas, coverageArea]);
+      setCoverageArea('');
+    }
+  };
+
+  const handleRemoveCoverageArea = (area) => {
+    setCoverageAreas(coverageAreas.filter(a => a !== area));
+  };
+
+  const handleNext = () => {
+    setActiveStep((prevActiveStep) => prevActiveStep + 1);
+  };
+
+  const handleBack = () => {
+    setActiveStep((prevActiveStep) => prevActiveStep - 1);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    
+    try {
+      if (!auth.currentUser) {
+        setError('You must be logged in to save your profile');
+        setSaving(false);
+        return;
+      }
+      
+      let profileData = {};
+      
+      if (userType === 'company') {
+        profileData = {
+          companyName,
+          companySize,
+          website,
+          description,
+          productCategories,
+          geographicNeeds,
+          profileComplete: true
+        };
+      } else {
+        profileData = {
+          companyName: businessName,
+          yearsExperience,
+          biography,
+          specialties,
+          coverageAreas,
+          surgeonRelationships,
+          profileComplete: true
+        };
+      }
+      
+      const result = await updateUserProfile(auth.currentUser.uid, profileData);
+      
+      if (result.success) {
+        setSuccess('Profile saved successfully!');
+        // If this is the final step, redirect to dashboard
+        if (activeStep === getSteps().length - 1) {
+          setTimeout(() => navigate('/dashboard'), 1500);
+        } else {
+          handleNext();
+        }
+      } else {
+        setError('Failed to save profile. Please try again.');
+      }
+    } catch (error) {
+      setError('An error occurred. Please try again.');
+      console.error(error);
+    }
+    
+    setSaving(false);
+  };
+
+  const getSteps = () => {
+    if (userType === 'company') {
+      return ['Basic Information', 'Product & Geographic Focus', 'Review & Complete'];
+    } else {
+      return ['Basic Information', 'Specialties & Coverage', 'Review & Complete'];
+    }
+  };
+
+  const getStepContent = (step) => {
+    if (userType === 'company') {
+      switch (step) {
+        case 0:
+          return (
+            <Grid container spacing={3}>
+              <Grid item xs={12}>
+                <TextField
+                  required
+                  fullWidth
+                  label="Company Name"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <FormControl fullWidth>
+                  <InputLabel>Company Size</InputLabel>
+                  <Select
+                    value={companySize}
+                    onChange={(e) => setCompanySize(e.target.value)}
+                    label="Company Size"
+                  >
+                    {companySizeOptions.map((size) => (
+                      <MenuItem key={size} value={size}>{size}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Website"
+                  placeholder="https://www.yourcompany.com"
+                  value={website}
+                  onChange={(e) => setWebsite(e.target.value)}
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Company Description"
+                  multiline
+                  rows={4}
+                  placeholder="Tell distributors about your company, mission, and products..."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                />
+              </Grid>
+            </Grid>
+          );
+        case 1:
+          return (
+            <Grid container spacing={3}>
+              <Grid item xs={12}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Product Categories
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  Select the categories that best describe your products
+                </Typography>
+                <Box sx={{ display: 'flex', mb: 2 }}>
+                  <FormControl fullWidth sx={{ mr: 1 }}>
+                    <InputLabel>Product Category</InputLabel>
+                    <Select
+                      value={productCategory}
+                      onChange={(e) => setProductCategory(e.target.value)}
+                      label="Product Category"
+                    >
+                      {specialtyOptions.map((option) => (
+                        <MenuItem key={option} value={option}>{option}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Button 
+                    variant="outlined" 
+                    onClick={handleAddProductCategory}
+                    disabled={!productCategory}
+                  >
+                    Add
+                  </Button>
+                </Box>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  {productCategories.map((category) => (
+                    <Chip
+                      key={category}
+                      label={category}
+                      onDelete={() => handleRemoveProductCategory(category)}
+                      color="primary"
+                      variant="outlined"
+                    />
+                  ))}
+                </Box>
+              </Grid>
+              
+              <Grid item xs={12} sx={{ mt: 3 }}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Geographic Coverage Needs
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  Select the regions where you need distribution coverage
+                </Typography>
+                <Box sx={{ display: 'flex', mb: 2 }}>
+                  <FormControl fullWidth sx={{ mr: 1 }}>
+                    <InputLabel>Geographic Region</InputLabel>
+                    <Select
+                      value={geographicNeed}
+                      onChange={(e) => setGeographicNeed(e.target.value)}
+                      label="Geographic Region"
+                    >
+                      {regionOptions.map((option) => (
+                        <MenuItem key={option} value={option}>{option}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Button 
+                    variant="outlined" 
+                    onClick={handleAddGeographicNeed}
+                    disabled={!geographicNeed}
+                  >
+                    Add
+                  </Button>
+                </Box>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  {geographicNeeds.map((region) => (
+                    <Chip
+                      key={region}
+                      label={region}
+                      onDelete={() => handleRemoveGeographicNeed(region)}
+                      color="primary"
+                      variant="outlined"
+                    />
+                  ))}
+                </Box>
+              </Grid>
+            </Grid>
+          );
+        case 2:
+          return (
+            <Grid container spacing={3}>
+              <Grid item xs={12}>
+                <Typography variant="h6" gutterBottom>
+                  Company Profile Summary
+                </Typography>
+                <Paper variant="outlined" sx={{ p: 3, bgcolor: '#f9f9f9' }}>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="subtitle2">Company Name:</Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={8}>
+                      <Typography variant="body1">{companyName}</Typography>
+                    </Grid>
+
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="subtitle2">Company Size:</Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={8}>
+                      <Typography variant="body1">{companySize || 'Not specified'}</Typography>
+                    </Grid>
+
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="subtitle2">Website:</Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={8}>
+                      <Typography variant="body1">{website || 'Not specified'}</Typography>
+                    </Grid>
+
+                    <Grid item xs={12}>
+                      <Typography variant="subtitle2">Description:</Typography>
+                      <Typography variant="body1" paragraph>
+                        {description || 'No description provided'}
+                      </Typography>
+                    </Grid>
+
+                    <Grid item xs={12}>
+                      <Typography variant="subtitle2">Product Categories:</Typography>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
+                        {productCategories.length > 0 ? (
+                          productCategories.map((category) => (
+                            <Chip key={category} label={category} size="small" color="primary" />
+                          ))
+                        ) : (
+                          <Typography variant="body2" color="textSecondary">
+                            No product categories specified
+                          </Typography>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    <Grid item xs={12}>
+                      <Typography variant="subtitle2">Geographic Coverage Needs:</Typography>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
+                        {geographicNeeds.length > 0 ? (
+                          geographicNeeds.map((region) => (
+                            <Chip key={region} label={region} size="small" color="primary" />
+                          ))
+                        ) : (
+                          <Typography variant="body2" color="textSecondary">
+                            No geographic needs specified
+                          </Typography>
+                        )}
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </Paper>
+              </Grid>
+            </Grid>
+          );
+        default:
+          return 'Unknown step';
+      }
+    } else {
+      // Distributor steps
+      switch (step) {
+        case 0:
+          return (
+            <Grid container spacing={3}>
+              <Grid item xs={12}>
+                <TextField
+                  required
+                  fullWidth
+                  label="Business Name"
+                  value={businessName}
+                  onChange={(e) => setBusinessName(e.target.value)}
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Years of Experience
+                </Typography>
+                <Slider
+                  value={yearsExperience}
+                  onChange={(e, newValue) => setYearsExperience(newValue)}
+                  valueLabelDisplay="auto"
+                  step={1}
+                  marks
+                  min={0}
+                  max={30}
+                />
+                <Typography variant="body2" color="textSecondary" align="center">
+                  {yearsExperience} {yearsExperience === 1 ? 'year' : 'years'}
+                </Typography>
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Professional Biography"
+                  multiline
+                  rows={4}
+                  placeholder="Tell companies about your experience, specialties, and what makes you unique..."
+                  value={biography}
+                  onChange={(e) => setBiography(e.target.value)}
+                />
+              </Grid>
+            </Grid>
+          );
+        case 1:
+          return (
+            <Grid container spacing={3}>
+              <Grid item xs={12}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Medical Specialties
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  Select the specialties you have experience with
+                </Typography>
+                <Box sx={{ display: 'flex', mb: 2 }}>
+                  <FormControl fullWidth sx={{ mr: 1 }}>
+                    <InputLabel>Specialty</InputLabel>
+                    <Select
+                      value={specialty}
+                      onChange={(e) => setSpecialty(e.target.value)}
+                      label="Specialty"
+                    >
+                      {specialtyOptions.map((option) => (
+                        <MenuItem key={option} value={option}>{option}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Button 
+                    variant="outlined" 
+                    onClick={handleAddSpecialty}
+                    disabled={!specialty}
+                  >
+                    Add
+                  </Button>
+                </Box>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  {specialties.map((spec) => (
+                    <Chip
+                      key={spec}
+                      label={spec}
+                      onDelete={() => handleRemoveSpecialty(spec)}
+                      color="primary"
+                      variant="outlined"
+                    />
+                  ))}
+                </Box>
+              </Grid>
+              
+              <Grid item xs={12} sx={{ mt: 3 }}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Geographic Coverage Areas
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  Select the regions where you currently operate
+                </Typography>
+                <Box sx={{ display: 'flex', mb: 2 }}>
+                  <FormControl fullWidth sx={{ mr: 1 }}>
+                    <InputLabel>Coverage Area</InputLabel>
+                    <Select
+                      value={coverageArea}
+                      onChange={(e) => setCoverageArea(e.target.value)}
+                      label="Coverage Area"
+                    >
+                      {regionOptions.map((option) => (
+                        <MenuItem key={option} value={option}>{option}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Button 
+                    variant="outlined" 
+                    onClick={handleAddCoverageArea}
+                    disabled={!coverageArea}
+                  >
+                    Add
+                  </Button>
+                </Box>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  {coverageAreas.map((area) => (
+                    <Chip
+                      key={area}
+                      label={area}
+                      onDelete={() => handleRemoveCoverageArea(area)}
+                      color="primary"
+                      variant="outlined"
+                    />
+                  ))}
+                </Box>
+              </Grid>
+              
+              <Grid item xs={12} sx={{ mt: 3 }}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Number of Surgeon Relationships
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  Estimate how many active relationships you have with surgeons
+                </Typography>
+                <Slider
+                  value={surgeonRelationships}
+                  onChange={(e, newValue) => setSurgeonRelationships(newValue)}
+                  valueLabelDisplay="auto"
+                  step={5}
+                  marks
+                  min={0}
+                  max={100}
+                />
+                <Typography variant="body2" color="textSecondary" align="center">
+                  {surgeonRelationships} {surgeonRelationships === 1 ? 'surgeon' : 'surgeons'}
+                </Typography>
+              </Grid>
+            </Grid>
+          );
+        case 2:
+          return (
+            <Grid container spacing={3}>
+              <Grid item xs={12}>
+                <Typography variant="h6" gutterBottom>
+                  Distributor Profile Summary
+                </Typography>
+                <Paper variant="outlined" sx={{ p: 3, bgcolor: '#f9f9f9' }}>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="subtitle2">Business Name:</Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={8}>
+                      <Typography variant="body1">{businessName}</Typography>
+                    </Grid>
+
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="subtitle2">Years of Experience:</Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={8}>
+                      <Typography variant="body1">
+                        {yearsExperience} {yearsExperience === 1 ? 'year' : 'years'}
+                      </Typography>
+                    </Grid>
+
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="subtitle2">Surgeon Relationships:</Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={8}>
+                      <Typography variant="body1">
+                        {surgeonRelationships} {surgeonRelationships === 1 ? 'surgeon' : 'surgeons'}
+                      </Typography>
+                    </Grid>
+
+                    <Grid item xs={12}>
+                      <Typography variant="subtitle2">Biography:</Typography>
+                      <Typography variant="body1" paragraph>
+                        {biography || 'No biography provided'}
+                      </Typography>
+                    </Grid>
+
+                    <Grid item xs={12}>
+                      <Typography variant="subtitle2">Medical Specialties:</Typography>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
+                        {specialties.length > 0 ? (
+                          specialties.map((spec) => (
+                            <Chip key={spec} label={spec} size="small" color="primary" />
+                          ))
+                        ) : (
+                          <Typography variant="body2" color="textSecondary">
+                            No specialties specified
+                          </Typography>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    <Grid item xs={12}>
+                      <Typography variant="subtitle2">Coverage Areas:</Typography>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
+                        {coverageAreas.length > 0 ? (
+                          coverageAreas.map((area) => (
+                            <Chip key={area} label={area} size="small" color="primary" />
+                          ))
+                        ) : (
+                          <Typography variant="body2" color="textSecondary">
+                            No coverage areas specified
+                          </Typography>
+                        )}
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </Paper>
+              </Grid>
+            </Grid>
+          );
+        default:
+          return 'Unknown step';
+      }
+    }
+  };
+
+  if (loading) {
+    return (
+      <Container maxWidth="md">
+        <Box sx={{ mt: 8, mb: 8, textAlign: 'center' }}>
+          <Typography variant="h5">Loading profile...</Typography>
+        </Box>
+      </Container>
+    );
+  }
+
+  const steps = getSteps();
+
+  return (
+    <Container maxWidth="md">
+      <Box sx={{ mt: 8, mb: 8 }}>
+        <Paper elevation={3} sx={{ p: 4 }}>
+          <Typography variant="h4" component="h1" align="center" gutterBottom>
+            Complete Your Profile
+          </Typography>
+          <Typography variant="body1" align="center" color="textSecondary" sx={{ mb: 4 }}>
+            {userType === 'company' 
+              ? 'Help distributors understand your company and its needs'
+              : 'Share your expertise and coverage areas with potential partners'
+            }
+          </Typography>
+
+          {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+          {success && <Alert severity="success" sx={{ mb: 3 }}>{success}</Alert>}
+
+          <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
+            {steps.map((label) => (
+              <Step key={label}>
+                <StepLabel>{label}</StepLabel>
+              </Step>
+            ))}
+          </Stepper>
+
+          <Box sx={{ mt: 4, mb: 4 }}>
+            {getStepContent(activeStep)}
+          </Box>
+
+          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+            <Button
+              variant="outlined"
+              disabled={activeStep === 0 || saving}
+              onClick={handleBack}
+            >
+              Back
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleSave}
+              disabled={saving}
+            >
+              {saving
+                ? 'Saving...'
+                : activeStep === steps.length - 1
+                  ? 'Complete Profile'
+                  : 'Save & Continue'
+              }
+            </Button>
+          </Box>
+        </Paper>
+      </Box>
+    </Container>
+  );
+};
+
+export default ProfileSetup;
+
+// File: client/src/components/Dashboard.js
+// Other component files would be created similarly
+// This is a partial implementation to show structure for remaining components
+import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { 
+  Container, 
+  Box, 
+  Typography, 
+  Grid, 
+  Paper, 
+  Button,
+  Card,
+  CardContent,
+  CardActions,
+  Divider,
+  Avatar,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
+  Alert
+} from '@mui/material';
+import PersonSearchIcon from '@mui/icons-material/PersonSearch';
+import MessageIcon from '@mui/icons-material/Message';
+import BusinessCenterIcon from '@mui/icons-material/BusinessCenter';
+import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import PendingIcon from '@mui/icons-material/Pending';
+
+import { auth, getUserProfile, getPotentialMatches } from '../firebase';
+
+const Dashboard = () => {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [profile, setProfile] = useState(null);
+  const [topMatches, setTopMatches] = useState([]);
+
+  useEffect(() => {
+    const loadDashboardData = async () => {
+      if (!auth.currentUser) {
+        return;
+      }
+
+      try {
+        // Get user profile
+        const profileResult = await getUserProfile(auth.currentUser.uid);
+        
+        if (profileResult.success) {
+          setProfile(profileResult.profile);
+          
+          // If profile isn't complete, we don't need to load matches
+          if (!profileResult.profile.profileComplete) {
+            setLoading(false);
+            return;
+          }
+          
+          // Get top matches
+          const matchesResult = await getPotentialMatches(
+            auth.currentUser.uid, 
+            profileResult.profile.userType
+          );
+          
+          if (matchesResult.success) {
+            // Just get top 3 matches for the dashboard
+            setTopMatches(matchesResult.matches.slice(0, 3));
+          } else {
+            setError('Failed to load matches. Please try again later.');
+          }
+        } else {
+          setError('Failed to load profile. Please try again later.');
+        }
+      } catch (error) {
+        setError('An error occurred. Please try again later.');
+        console.error(error);
+      }
+      
+      setLoading(false);
+    };
+
+    loadDashboardData();
+  }, []);
+
+  if (loading) {
+    return (
+      <Container maxWidth="lg">
+        <Box sx={{ mt: 8, textAlign: 'center' }}>
+          <Typography variant="h5">Loading dashboard...</Typography>
+        </Box>
+      </Container>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <Container maxWidth="lg">
+        <Box sx={{ mt: 8 }}>
+          <Alert severity="error">
+            Unable to load profile. Please try logging in again.
+          </Alert>
+          <Button
+            component={Link}
+            to="/login"
+            variant="contained"
+            sx={{ mt: 2 }}
+          >
+            Return to Login
+          </Button>
+        </Box>
+      </Container>
+    );
+  }
+
+  // If profile setup is not complete, show a prompt
+  if (!profile.profileComplete) {
+    return (
+      <Container maxWidth="md">
+        <Box sx={{ mt: 8, mb: 8 }}>
+          <Paper elevation={3} sx={{ p: 4, textAlign: 'center' }}>
+            <Typography variant="h4" gutterBottom>
+              Welcome to Medical Match!
+            </Typography>
+            <Typography variant="body1" paragraph>
+              To start connecting with {profile.userType === 'company' ? 'distributors' : 'companies'}, 
+              please complete your profile setup.
+            </Typography>
+            <Button
+              component={Link}
+              to="/profile-setup"
+              variant="contained"
+              size="large"
+              sx={{ mt: 2 }}
+            >
+              Complete Profile Setup
+            </Button>
+          </Paper>
+        </Box>
+      </Container>
+    );
+  }
+
+  return (
+    <Container maxWidth="lg">
+      <Box sx={{ mt: 4, mb: 8 }}>
+        {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+
+        <Grid container spacing={4}>
+          {/* Welcome Card */}
+          <Grid item xs={12}>
+            <Paper 
+              elevation={0} 
+              sx={{ 
+                p: 4, 
+                borderRadius: 2,
+                background: 'linear-gradient(45deg, #1976d2 30%, #21CBF3 90%)',
+                color: 'white'
+              }}
+            >
+              <Grid container spacing={2} alignItems="center">
+                <Grid item xs={12} md={8}>
+                  <Typography variant="h4" component="h1" gutterBottom>
+                    Welcome Back, {profile.companyName}!
+                  </Typography>
+                  <Typography variant="h6">
+                    Your {profile.userType === 'company' ? 'Company' : 'Distributor'} Dashboard
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4} sx={{ textAlign: 'right' }}>
+                  <Button 
+                    variant="contained" 
+                    component={Link}
+                    to="/matches"
+                    startIcon={<PersonSearchIcon />}
+                    sx={{ 
+                      bgcolor: 'white', 
+                      color: '#1976d2',
+                      '&:hover': {
+                        bgcolor: '#f5f5f5',
+                      }
+                    }}
+                  >
+                    Find Matches
+                  </Button>
+                </Grid>
+              </Grid>
+            </Paper>
+          </Grid>
+
+          {/* Quick Stats */}
+          <Grid item xs={12} md={4}>
+            <Card sx={{ height: '100%' }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>
+                  Profile Completion
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                  <CheckCircleIcon color="success" sx={{ mr: 1 }} />
+                  <Typography variant="body1">
+                    Your profile is complete
+                  </Typography>
+                </Box>
+                <Divider sx={{ my: 2 }} />
+                <Typography variant="body2" color="textSecondary">
+                  A complete profile increases your chances of finding the perfect match.
+                </Typography>
+              </CardContent>
+              <CardActions>
+                <Button 
+                  size="small" 
+                  component={Link} 
+                  to="/profile"
+                >
+                  Edit Profile
+                </Button>
+              </CardActions>
+            </Card>
+          </Grid>
+
+          <Grid item xs={12} md={4}>
+            <Card sx={{ height: '100%' }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>
+                  {profile.userType === 'company' ? 'Product Categories' : 'Specialties'}
+                </Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  {(profile.userType === 'company' ? profile.productCategories : profile.specialties).map((item) => (
+                    <Chip key={item} label={item} size="small" color="primary" />
+                  ))}
+                </Box>
+              </CardContent>
+              <CardActions>
+                <Button 
+                  size="small" 
+                  component={Link} 
+                  to="/profile"
+                >
+                  Update
+                </Button>
+              </CardActions>
+            </Card>
+          </Grid>
+
+          <Grid item xs={12} md={4}>
+            <Card sx={{ height: '100%' }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>
+                  {profile.userType === 'company' ? 'Geographic Needs' : 'Coverage Areas'}
+                </Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  {(profile.userType === 'company' ? profile.geographicNeeds : profile.coverageAreas).map((item) => (
+                    <Chip key={item} label={item} size="small" color="primary" />
+                  ))}
+                </Box>
+              </CardContent>
+              <CardActions>
+                <Button 
+                  size="small" 
+                  component={Link} 
+                  to="/profile"
+                >
+                  Update
+                </Button>
+              </CardActions>
+            </Card>
+          </Grid>
+
+          {/* Top Matches */}
+          <Grid item xs={12}>
+            <Paper sx={{ p: 3 }}>
+              <Typography variant="h5" gutterBottom>
+                Your Top Matches
+              </Typography>
+              
+              {topMatches.length > 0 ? (
+                <Grid container spacing={3}>
+                  {topMatches.map((match) => (
+                    <Grid item xs={12} md={4} key={match.id}>
+                      <Card sx={{ height: '100%' }}>
+                        <CardContent>
+                          <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                            <Avatar sx={{ bgcolor: 'primary.main', mr: 2 }}>
+                              {match.companyName.charAt(0)}
+                            </Avatar>
+                            <Typography variant="h6" noWrap>
+                              {match.companyName}
+                            </Typography>
+                          </Box>
+                          
+                          <Typography variant="body2" color="primary" fontWeight="bold" sx={{ mb: 1 }}>
+                            {match.matchScore}% Match
+                          </Typography>
+                          
+                          <Typography variant="body2" color="textSecondary" paragraph>
+                            {profile.userType === 'company' 
+                              ? `${match.coverageAreas?.length || 0} Coverage Areas • ${match.specialties?.length || 0} Specialties`
+                              : `${match.productCategories?.length || 0} Product Categories • ${match.geographicNeeds?.length || 0} Regions`
+                            }
+                          </Typography>
+                          
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
+                            {profile.userType === 'company' 
+                              ? (match.specialties || []).slice(0, 3).map((specialty) => (
+                                  <Chip key={specialty} label={specialty} size="small" />
+                                ))
+                              : (match.productCategories || []).slice(0, 3).map((category) => (
+                                  <Chip key={category} label={category} size="small" />
+                                ))
+                            }
+                            {(profile.userType === 'company' ? match.specialties?.length > 3 : match.productCategories?.length > 3) && (
+                              <Typography variant="body2" color="textSecondary">+more</Typography>
+                            )}
+                          </Box>
+                        </CardContent>
+                        <CardActions sx={{ justifyContent: 'space-between' }}>
+                          <Button size="small">View Profile</Button>
+                          <Button 
+                            size="small" 
+                            variant="outlined" 
+                            startIcon={<MessageIcon />}
+                          >
+                            Contact
+                          </Button>
+                        </CardActions>
+                      </Card>
+                    </Grid>
+                  ))}
+                </Grid>
+              ) : (
+                <Box sx={{ textAlign: 'center', py: 4 }}>
+                  <PendingIcon color="action" sx={{ fontSize: 60, mb: 2, opacity: 0.5 }} />
+                  <Typography variant="h6" color="textSecondary" gutterBottom>
+                    No matches found yet
+                  </Typography>
+                  <Typography variant="body2" color="textSecondary" paragraph>
+                    We're working on finding the perfect partners for you. Check back soon!
+                  </Typography>
+                </Box>
+              )}
+              
+              <Box sx={{ mt: 3, textAlign: 'center' }}>
+                <Button 
+                  variant="contained"
+                  component={Link}
+                  to="/matches"
+                  startIcon={<PersonSearchIcon />}
+                >
+                  View All Matches
+                </Button>
+              </Box>
+            </Paper>
+          </Grid>
+
+          {/* Quick Actions */}
+          <Grid item xs={12}>
+            <Paper sx={{ p: 3 }}>
+              <Typography variant="h5" gutterBottom>
+                Quick Actions
+              </Typography>
+              <List>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={4}>
+                    <ListItem 
+                      component={Link} 
+                      to="/messages"
+                      sx={{ 
+                        border: '1px solid #e0e0e0', 
+                        borderRadius: 1, 
+                        mb: 1,
+                        textDecoration: 'none',
+                        color: 'inherit'
+                      }}
+                    >
+                      <ListItemIcon>
+                        <MessageIcon color="primary" />
+                      </ListItemIcon>
+                      <ListItemText 
+                        primary="Messages" 
+                        secondary="View and send messages to potential partners" 
+                      />
+                    </ListItem>
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <ListItem 
+                      component={Link} 
+                      to="/profile"
+                      sx={{ 
+                        border: '1px solid #e0e0e0', 
+                        borderRadius: 1, 
+                        mb: 1,
+                        textDecoration: 'none',
+                        color: 'inherit'
+                      }}
+                    >
+                      <ListItemIcon>
+                        <BusinessCenterIcon color="primary" />
+                      </ListItemIcon>
+                      <ListItemText 
+                        primary="Update Profile" 
+                        secondary="Keep your information current for better matches" 
+                      />
+                    </ListItem>
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <ListItem 
+                      component="div"
+                      sx={{ 
+                        border: '1px solid #e0e0e0', 
+                        borderRadius: 1, 
+                        mb: 1 
+                      }}
+                    >
+                      <ListItemIcon>
+                        <VerifiedUserIcon color="primary" />
+                      </ListItemIcon>
+                      <ListItemText 
+                        primary="Verification Status" 
+                        secondary="Your account is pending verification" 
+                      />
+                    </ListItem>
+                  </Grid>
+                </Grid>
+              </List>
+            </Paper>
+          </Grid>
+        </Grid>
+      </Box>
+    </Container>
+  );
+};
+
+export default Dashboard;
+
+// File: client/src/components/Navbar.js
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { 
+  AppBar, 
+  Toolbar, 
+  Typography, 
+  Button, 
+  IconButton,
+  Box,
+  Menu,
+  MenuItem,
+  Avatar,
+  Divider,
+  ListItemIcon
+} from '@mui/material';
+import MenuIcon from '@mui/icons-material/Menu';
+import DashboardIcon from '@mui/icons-material/Dashboard';
+import PersonSearchIcon from '@mui/icons-material/PersonSearch';
+import MessageIcon from '@mui/icons-material/Message';
+import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+import LogoutIcon from '@mui/icons-material/Logout';
+import { logoutUser } from '../firebase';
+
+const Navbar = () => {
+  const [mobileMenuAnchor, setMobileMenuAnchor] = useState(null);
+  const [userMenuAnchor, setUserMenuAnchor] = useState(null);
+  const navigate = useNavigate();
+
+  const isMobileMenuOpen = Boolean(mobileMenuAnchor);
+  const isUserMenuOpen = Boolean(userMenuAnchor);
+
+  const handleMobileMenuOpen = (event) => {
+    setMobileMenuAnchor(event.currentTarget);
+  };
+
+  const handleMobileMenuClose = () => {
+    setMobileMenuAnchor(null);
+  };
+
+  const handleUserMenuOpen = (event) => {
+    setUserMenuAnchor(event.currentTarget);
+  };
+
+  const handleUserMenuClose = () => {
+    setUserMenuAnchor(null);
+  };
+
+  const handleLogout = async () => {
+    handleUserMenuClose();
+    const result = await logoutUser();
+    
+    if (result.success) {
+      navigate('/login');
+    } else {
+      console.error('Logout failed:', result.error);
+    }
+  };
+
+  return (
+    <>
+      <AppBar position="static">
+        <Toolbar>
+          <Typography
+            variant="h6"
+            component={Link}
+            to="/dashboard"
+            sx={{ 
+              flexGrow: 1, 
+              textDecoration: 'none', 
+              color: 'inherit',
+              display: 'flex',
+              alignItems: 'center'
+            }}
+          >
+            Medical Match
+          </Typography>
+
+          {/* Desktop menu */}
+          <Box sx={{ display: { xs: 'none', md: 'flex' } }}>
+            <Button 
+              color="inherit" 
+              component={Link} 
+              to="/dashboard"
+              startIcon={<DashboardIcon />}
+            >
+              Dashboard
+            </Button>
+            <Button 
+              color="inherit" 
+              component={Link} 
+              to="/matches"
+              startIcon={<PersonSearchIcon />}
+            >
+              Matches
+            </Button>
+            <Button 
+              color="inherit" 
+              component={Link} 
+              to="/messages"
+              startIcon={<MessageIcon />}
+            >
+              Messages
+            </Button>
+            <IconButton
+              edge="end"
+              color="inherit"
+              onClick={handleUserMenuOpen}
+              sx={{ ml: 1 }}
+            >
+              <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.dark' }}>
+                <AccountCircleIcon />
+              </Avatar>
+            </IconButton>
+          </Box>
+
+          {/* Mobile menu icon */}
+          <Box sx={{ display: { xs: 'flex', md: 'none' } }}>
+            <IconButton
+              edge="end"
+              color="inherit"
+              onClick={handleMobileMenuOpen}
+            >
+              <MenuIcon />
+            </IconButton>
+          </Box>
+        </Toolbar>
+      </AppBar>
+
+      {/* Mobile menu */}
+      <Menu
+        anchorEl={mobileMenuAnchor}
+        open={isMobileMenuOpen}
+        onClose={handleMobileMenuClose}
+        MenuListProps={{
+          'aria-labelledby': 'mobile-menu-button',
+        }}
+      >
+        <MenuItem 
+          onClick={() => {
+            handleMobileMenuClose();
+            navigate('/dashboard');
+          }}
+        >
+          <ListItemIcon>
+            <DashboardIcon fontSize="small" />
+          </ListItemIcon>
+          Dashboard
+        </MenuItem>
+        <MenuItem 
+          onClick={() => {
+            handleMobileMenuClose();
+            navigate('/matches');
+          }}
+        >
+          <ListItemIcon>
+            <PersonSearchIcon fontSize="small" />
+          </ListItemIcon>
+          Matches
+        </MenuItem>
+        <MenuItem 
+          onClick={() => {
+            handleMobileMenuClose();
+            navigate('/messages');
+          }}
+        >
+          <ListItemIcon>
+            <MessageIcon fontSize="small" />
+          </ListItemIcon>
+          Messages
+        </MenuItem>
+        <MenuItem 
+          onClick={() => {
+            handleMobileMenuClose();
+            navigate('/profile');
+          }}
+        >
+          <ListItemIcon>
+            <AccountCircleIcon fontSize="small" />
+          </ListItemIcon>
+          Profile
+        </MenuItem>
+        <Divider />
+        <MenuItem onClick={handleLogout}>
+          <ListItemIcon>
+            <LogoutIcon fontSize="small" />
+          </ListItemIcon>
+          Logout
+        </MenuItem>
+      </Menu>
+
+      {/* User menu */}
+      <Menu
+        anchorEl={userMenuAnchor}
+        open={isUserMenuOpen}
+        onClose={handleUserMenuClose}
+        MenuListProps={{
+          'aria-labelledby': 'user-menu-button',
+        }}
+      >
+        <MenuItem 
+          onClick={() => {
+            handleUserMenuClose();
+            navigate('/profile');
+          }}
+        >
+          <ListItemIcon>
+            <AccountCircleIcon fontSize="small" />
+          </ListItemIcon>
+          Profile
+        </MenuItem>
+        <Divider />
+        <MenuItem onClick={handleLogout}>
+          <ListItemIcon>
+            <LogoutIcon fontSize="small" />
+          </ListItemIcon>
+          Logout
+        </MenuItem>
+      </Menu>
+    </>
+  );
+};
+
+export default Navbar;
+
+// File: client/src/components/PrivateRoute.js
+import React from 'react';
+import { Navigate } from 'react-router-dom';
+
+const PrivateRoute = ({ user, children }) => {
+  if (!user) {
+    return <Navigate to="/login" />;
+  }
+
+  return children;
+};
+
+export default PrivateRoute;
+
+// File: client/src/index.js
+import React from 'react';
+import ReactDOM from 'react-dom';
+import App from './App';
+
+ReactDOM.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+  document.getElementById('root')
+);
+
+// File: client/public/index.html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="Medical Match - Connecting medical device companies with distributors"
+    />
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap"
+    />
+    <title>Medical Match</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+  </body>
+</html>
+
+// File: .replit (at the root level)
+hidden=[".git", ".config"]
+modules = ["nodejs-20:v8-20230920-bd784b9"]
+run = "npm start"
+
+entrypoint = "index.js"
